@@ -273,10 +273,13 @@
       // TELEGRAPH KEY LOGIC
       // =======================================================================
       const handlePressStart = useCallback((e) => {
-        if (e && e.preventDefault && e.type === 'keydown') {
+        if (e && e.type === 'keydown') {
+          // Ignore if the user is typing inside an input field
+          if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+          
           if (e.code !== 'Space') return;
           if (e.repeat) return;
-          e.preventDefault(); 
+          if (e.preventDefault) e.preventDefault(); 
         }
         setIsPressing(true);
         pressStartTime.current = Date.now();
@@ -286,7 +289,12 @@
       }, []);
 
       const handlePressEnd = useCallback((e) => {
-        if (e && e.type === 'keyup' && e.code !== 'Space') return;
+        if (e && e.type === 'keyup') {
+          // Ignore if the user is typing inside an input field
+          if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+          
+          if (e.code !== 'Space') return;
+        }
         if (!isPressing) return;
 
         setIsPressing(false);
