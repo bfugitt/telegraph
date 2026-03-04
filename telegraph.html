@@ -167,7 +167,9 @@
             await signInAnonymously(auth);
             unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
           } catch (error) {
-            console.error("Auth error:", error);
+            console.warn("Auth disabled in Firebase. Proceeding with public database:", error.message);
+            // Provide a fallback user so the app continues loading
+            setUser({ isFallback: true });
           }
         };
 
@@ -186,7 +188,8 @@
 
       // Listen to Office Status & Messages
       useEffect(() => {
-        if (!user || !db || !window.FB) return;
+        // We removed the strict !user check here so it loads regardless
+        if (!db || !window.FB) return;
 
         const { collection, doc, onSnapshot, setDoc } = window.FB;
         let unsubscribeStatus;
