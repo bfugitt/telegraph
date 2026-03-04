@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcontinental Telegraph</title>
+  
+  <!-- Tailwind CSS for styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React and ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel for parsing JSX in the browser -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* Prevent text selection while using the telegraph key */
+    body {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    
+    /* Custom scrollbar for the chat */
+    .wire-scroll::-webkit-scrollbar {
+      width: 8px;
+    }
+    .wire-scroll::-webkit-scrollbar-track {
+      background: #f4e4bc; 
+    }
+    .wire-scroll::-webkit-scrollbar-thumb {
+      background: #d2b48c; 
+      border-radius: 4px;
+    }
+    .wire-scroll::-webkit-scrollbar-thumb:hover {
+      background: #a0522d; 
+    }
+  </style>
+</head>
+<body class="bg-[#2c1e16]">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // =========================================================================
+    // TEACHER CONFIGURATION
+    // If you are uploading this to your own class website, paste your Firebase 
+    // config here (from your JoliChat project) inside the brackets:
+    // =========================================================================
+    
+  const MY_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyA_5r6DAUKkYv5TFP9XM3K3SnRBtmdUS0g",
+            authDomain: "classroom-chat-756d5.firebaseapp.com",
+            databaseURL: "https://classroom-chat-756d5-default-rtdb.firebaseio.com",
+            projectId: "classroom-chat-756d5",
+            storageBucket: "classroom-chat-756d5.firebasestorage.app",
+            messagingSenderId: "805467042314",
+            appId: "1:805467042314:web:c70e68f316c3a76d73a5f3",
+            measurementId: "G-04X2N5MR75"
+        };
+
+    // Example: { apiKey: "xxx", authDomain: "xxx", projectId: "xxx", ... }
+
+
+    // --- Constants & Dictionaries ---
+    const MORSE_CODE = {
+      'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
+      'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..',
+      'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.',
+      'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
+      'Y': '-.--', 'Z': '--..'
+    };
+
+    const REVERSE_MORSE = Object.entries(MORSE_CODE).reduce((acc, [letter, code]) => {
+      acc[code] = letter;
+      return acc;
+    }, {});
+
+    const PRACTICE_WORDS = ['TRAIN', 'IRON', 'GOLD', 'TRACK', 'WEST', 'PONY', 'HORSE', 'STEAM', 'STEEL', 'WIRE'];
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // Timing thresholds (in milliseconds)
+    const DOT_DASH_THRESHOLD = 200;
+    const LETTER_PAUSE_THRESHOLD = 600;
+    const WORD_PAUSE_THRESHOLD = 1500;
+
+    // --- Audio Manager ---
+    class TelegraphAudio {
+      constructor() {
+        this.audioCtx = null;
+        this.oscillator = null;
+        this.gainNode = null;
+      }
+
+      init() {
+        if (!this.audioCtx) {
+          this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+      }
+
+      start() {
+        this.init();
+        if (this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume();
+        }
+        
+        this.oscillator = this.audioCtx.createOscillator();
+        this.oscillator.type = 'sine';
+        this.oscillator.frequency.setValueAtTime(600, this.audioCtx.currentTime);
+        
+        this.gainNode = this.audioCtx.createGain();
+        this.gainNode.gain.setValueAtTime(0.1, this.audioCtx.currentTime);
+        
+        this.oscillator.connect(this.gainNode);
+        this.gainNode.connect(this.audioCtx.destination);
+        
+        this.oscillator.start();
+      }
+
+      stop() {
+        if (this.oscillator && this.gainNode) {
+          this.gainNode.gain.exponentialRampToValueAtTime(0.00001, this.audioCtx.currentTime + 0.05);
+          this.oscillator.stop(this.audioCtx.currentTime + 0.05);
+          this.oscillator = null;
+        }
+      }
+    }
+
+    const audioPlayer = new TelegraphAudio();
+
+    function TelegraphApp() {
+      const [activeTab, setActiveTab] = useState('transmit');
+      
+      // Multi-player / Firebase State
+      const [user, setUser] = useState(null);
+      const [db, setDb] = useState(null);
+      const [appId, setAppId] = useState('transcontinental-telegraph');
+      const [isOfficeOpen, setIsOfficeOpen] = useState(false);
+      const [messages, setMessages] = useState([]);
+      const [userInitials, setUserInitials] = useState('');
+      const [nameInput, setNameInput] = useState('');
+      const [chatInput, setChatInput] = useState('');
+      
+      // Determine if Teacher Mode is active via URL
+      const isTeacher = window.location.search.includes('teacher=true');
+
+      // Refs
+      const pressStartTime = useRef(0);
+      const letterTimer = useRef(null);
+      const wordTimer = useRef(null);
+      const chatEndRef = useRef(null);
+
+      // --- Transmit State ---
+      const [isPressing, setIsPressing] = useState(false);
+      const [currentSymbol, setCurrentSymbol] = useState('');
+      const [decodedMessage, setDecodedMessage] = useState('');
+      
+      // --- Receive State ---
+      const [receiveWord, setReceiveWord] = useState(PRACTICE_WORDS[0]);
+      const [receiveInput, setReceiveInput] = useState('');
+      const [isPlaying, setIsPlaying] = useState(false);
+      const [receiveFeedback, setReceiveFeedback] = useState('');
+      const [visibleCode, setVisibleCode] = useState('');
+
+      // =======================================================================
+      // FIREBASE INITIALIZATION & LISTENERS
+      // =======================================================================
+      useEffect(() => {
+        let unsubscribeAuth;
+
+        const initFirebase = async () => {
+          try {
+            // Dynamically import Firebase modules
+            const { initializeApp } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js');
+            const { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js');
+            const { getFirestore } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
+
+            // Resolve config (Prioritize Teacher's custom config, fallback to platform config)
+            const fbConfig = MY_FIREBASE_CONFIG || (typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null);
+            
+            if (!fbConfig) {
+              console.warn("No Firebase Config found. Multiplayer disabled.");
+              return;
+            }
+            
+            const app = initializeApp(fbConfig);
+            const auth = getAuth(app);
+            const firestoreDb = getFirestore(app);
+            
+            setDb(firestoreDb);
+            if (typeof __app_id !== 'undefined') setAppId(__app_id);
+
+            // Authenticate
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+
+            unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
+          } catch (error) {
+            console.error("Error initializing Firebase:", error);
+          }
+        };
+        
+        initFirebase();
+        
+        return () => {
+          if (unsubscribeAuth) unsubscribeAuth();
+        };
+      }, []);
+
+      // Subscribe to Office Status & Messages
+      useEffect(() => {
+        if (!user || !db) return;
+
+        let unsubscribeStatus;
+        let unsubscribeMessages;
+
+        const setupListeners = async () => {
+          const { collection, onSnapshot, doc } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
+          
+          // 1. Listen to Office Status (Open/Closed)
+          const statusDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'telegraph_status', 'office');
+          unsubscribeStatus = onSnapshot(statusDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+              setIsOfficeOpen(docSnap.data().isOpen);
+            } else if (isTeacher) {
+              // Initialize doc if it doesn't exist and we are the teacher
+              import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js').then(({ setDoc }) => {
+                setDoc(statusDocRef, { isOpen: false });
+              });
+            }
+          }, (err) => console.error(err));
+
+          // 2. Listen to the Global Wire (Messages)
+          const messagesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'telegraph_messages');
+          unsubscribeMessages = onSnapshot(messagesColRef, (snapshot) => {
+            const msgs = [];
+            snapshot.forEach(doc => {
+              msgs.push({ id: doc.id, ...doc.data() });
+            });
+            // Sort in memory by timestamp to comply with No Complex Queries rule
+            msgs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            setMessages(msgs);
+          }, (err) => console.error(err));
+        };
+
+        setupListeners();
+
+        return () => {
+          if (unsubscribeStatus) unsubscribeStatus();
+          if (unsubscribeMessages) unsubscribeMessages();
+        };
+      }, [user, db, appId, isTeacher]);
+
+      // Auto-scroll chat
+      useEffect(() => {
+        if (chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+      }, [messages, activeTab]);
+
+      // =======================================================================
+      // MULTIPLAYER LOGIC
+      // =======================================================================
+      const toggleOfficeStatus = async () => {
+        if (!db) return;
+        const { doc, setDoc } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
+        const statusDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'telegraph_status', 'office');
+        await setDoc(statusDocRef, { isOpen: !isOfficeOpen }, { merge: true });
+      };
+
+      const handleJoinWire = () => {
+        const parts = nameInput.trim().split(' ');
+        let inits = '';
+        if (parts.length >= 2) {
+          inits = parts[0][0] + parts[parts.length - 1][0];
+        } else if (parts.length === 1 && parts[0].length > 0) {
+          inits = parts[0].substring(0, 2);
+        }
+        
+        if (inits) {
+          setUserInitials(inits.toUpperCase());
+        }
+      };
+
+      const textToMorse = (text) => {
+        return text.toUpperCase().split('').map(char => {
+          if (char === ' ') return ' / '; // Clear slash for spaces between words
+          return MORSE_CODE[char] || '';
+        }).filter(c => c).join(' '); // Space between dots/dashes
+      };
+
+      const sendMessage = async () => {
+        if (!chatInput.trim() || !db) return;
+        
+        const { collection, addDoc } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
+        const messagesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'telegraph_messages');
+        
+        const morseOutput = textToMorse(chatInput);
+        
+        await addDoc(messagesColRef, {
+          initials: isTeacher ? 'SM' : userInitials, // SM = Station Master
+          text: chatInput.toUpperCase(),
+          morse: morseOutput,
+          timestamp: Date.now()
+        });
+        
+        setChatInput('');
+      };
+
+
+      // =======================================================================
+      // TELEGRAPH KEY LOGIC
+      // =======================================================================
+      const handlePressStart = useCallback((e) => {
+        if (e && e.preventDefault && e.type === 'keydown') {
+          if (e.code !== 'Space') return;
+          if (e.repeat) return;
+          e.preventDefault(); 
+        }
+        setIsPressing(true);
+        pressStartTime.current = Date.now();
+        audioPlayer.start();
+        clearTimeout(letterTimer.current);
+        clearTimeout(wordTimer.current);
+      }, []);
+
+      const handlePressEnd = useCallback((e) => {
+        if (e && e.type === 'keyup' && e.code !== 'Space') return;
+        if (!isPressing) return;
+
+        setIsPressing(false);
+        audioPlayer.stop();
+
+        const pressDuration = Date.now() - pressStartTime.current;
+        const symbol = pressDuration < DOT_DASH_THRESHOLD ? '.' : '-';
+        
+        setCurrentSymbol(prev => {
+          const newSymbol = prev + symbol;
+          letterTimer.current = setTimeout(() => {
+            commitLetter(newSymbol);
+          }, LETTER_PAUSE_THRESHOLD);
+          return newSymbol;
+        });
+      }, [isPressing]);
+
+      const commitLetter = (symbolToCommit) => {
+        if (!symbolToCommit) return;
+        const letter = REVERSE_MORSE[symbolToCommit] || '?';
+        setDecodedMessage(prev => prev + letter);
+        setCurrentSymbol('');
+
+        wordTimer.current = setTimeout(() => {
+          setDecodedMessage(prev => {
+            if (prev.length > 0 && prev[prev.length - 1] !== ' ') {
+              return prev + ' ';
+            }
+            return prev;
+          });
+        }, WORD_PAUSE_THRESHOLD);
+      };
+
+      const clearMessage = () => {
+        setDecodedMessage('');
+        setCurrentSymbol('');
+        clearTimeout(letterTimer.current);
+        clearTimeout(wordTimer.current);
+      };
+
+      // =======================================================================
+      // RECEIVE LOGIC
+      // =======================================================================
+      const playMorseString = async (text, showVisuals = false) => {
+        if (isPlaying) return;
+        setIsPlaying(true);
+        setReceiveFeedback('');
+        setVisibleCode('');
+        const dotLength = 120;
+        
+        let currentVisual = '';
+
+        for (let char of text.toUpperCase()) {
+          if (char === ' ') {
+            await delay(dotLength * 7);
+            if (showVisuals) {
+              currentVisual += ' / ';
+              setVisibleCode(currentVisual);
+            }
+            continue;
+          }
+          const code = MORSE_CODE[char];
+          if (!code) continue;
+          
+          for (let i = 0; i < code.length; i++) {
+            const symbol = code[i];
+            if (showVisuals) {
+              currentVisual += symbol;
+              setVisibleCode(currentVisual);
+            }
+            audioPlayer.start();
+            await delay(symbol === '.' ? dotLength : dotLength * 3);
+            audioPlayer.stop();
+            await delay(dotLength); 
+          }
+          if (showVisuals) {
+            currentVisual += ' ';
+            setVisibleCode(currentVisual);
+          }
+          await delay(dotLength * 6); 
+        }
+        setIsPlaying(false);
+
+        if (showVisuals) {
+          setTimeout(() => {
+            setVisibleCode('');
+          }, 5000); 
+        }
+      };
+
+      const checkReceiveAnswer = () => {
+        if (receiveInput.trim().toUpperCase() === receiveWord) {
+          setReceiveFeedback('Correct! Great job, Operator.');
+        } else {
+          setReceiveFeedback('Not quite. Listen again or check the manual!');
+        }
+      };
+
+      const nextReceiveWord = () => {
+        const currentIndex = PRACTICE_WORDS.indexOf(receiveWord);
+        const nextIndex = (currentIndex + 1) % PRACTICE_WORDS.length;
+        setReceiveWord(PRACTICE_WORDS[nextIndex]);
+        setReceiveInput('');
+        setReceiveFeedback('');
+        setVisibleCode('');
+      };
+
+      // Keyboard listeners
+      useEffect(() => {
+        window.addEventListener('keydown', handlePressStart);
+        window.addEventListener('keyup', handlePressEnd);
+        return () => {
+          window.removeEventListener('keydown', handlePressStart);
+          window.removeEventListener('keyup', handlePressEnd);
+        };
+      }, [handlePressStart, handlePressEnd]);
+
+
+      // =======================================================================
+      // UI COMPONENTS
+      // =======================================================================
+      
+      const TabButton = ({ id, label, icon }) => (
+        <button
+          onClick={() => setActiveTab(id)}
+          className={`flex-1 py-3 px-4 text-lg font-bold uppercase tracking-wider transition-all border-2 border-b-0 rounded-t-lg
+            ${activeTab === id 
+              ? 'bg-[#f4e4bc] text-[#3e2723] border-[#5c4033] shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-10 relative' 
+              : 'bg-[#d2b48c] text-[#5c4033] border-[#a0522d] hover:bg-[#e6ccab]'
+            }`}
+        >
+          <span className="flex items-center justify-center gap-2">
+            {icon}
+            {label}
+          </span>
+        </button>
+      );
+
+      const OperatorsManual = () => (
+        <div className="w-full bg-[#fffdf5] border-2 border-[#d2b48c] rounded p-4 shadow-sm h-full">
+          <h3 className="text-center font-bold text-[#5c4033] border-b-2 border-[#d2b48c] pb-2 mb-3 uppercase tracking-wider">
+            Operator's Manual
+          </h3>
+          <div className="flex gap-4 text-sm font-mono text-[#3e2723]">
+            <div className="flex-1 flex flex-col">
+              {Object.entries(MORSE_CODE).slice(0, 13).map(([letter, code]) => (
+                <div key={letter} className="flex items-center border-b border-[#f4e4bc] py-1">
+                  <span className="font-bold font-serif w-6 text-right mr-3">{letter}</span>
+                  <span className="tracking-widest text-lg leading-none">{code}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex-1 flex flex-col">
+              {Object.entries(MORSE_CODE).slice(13, 26).map(([letter, code]) => (
+                <div key={letter} className="flex items-center border-b border-[#f4e4bc] py-1">
+                  <span className="font-bold font-serif w-6 text-right mr-3">{letter}</span>
+                  <span className="tracking-widest text-lg leading-none">{code}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen p-4 md:p-8 font-serif select-none">
+          <div className="max-w-6xl mx-auto">
+            
+            {/* Header */}
+            <div className="text-center mb-6 text-[#f4e4bc]">
+              <h1 className="text-4xl md:text-5xl font-bold tracking-widest uppercase mb-2" style={{ fontFamily: 'Georgia, serif' }}>
+                Transcontinental Telegraph Co.
+              </h1>
+              <p className="text-[#d2b48c] text-lg italic">Connecting the Frontier, One Tap at a Time</p>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="flex px-4 relative top-[2px]">
+              <TabButton id="transmit" label="Transmit (Type)" icon="⌨️" />
+              <TabButton id="receive" label="Receive (Listen)" icon="🎧" />
+              <TabButton id="chat" label="Telegraph Office" icon="🏤" />
+            </div>
+
+            {/* Main Content Area */}
+            <div className="bg-[#f4e4bc] border-4 border-[#5c4033] rounded-lg p-6 shadow-[inset_0_0_40px_rgba(0,0,0,0.1)] relative z-0">
+              
+              {/* BACKGROUND TEXTURE OVERLAY */}
+              <div className="absolute inset-0 opacity-[0.03] pointer-events-none" 
+                   style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' viewBox=\'0 0 100 100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'noise\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.8\' numOctaves=\'4\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100\' height=\'100\' filter=\'url(%23noise)\'/%3E%3C/svg%3E")' }}>
+              </div>
+
+              {/* ------------------------------------------------------------- */}
+              {/* TAB 1: TRANSMIT                                               */}
+              {/* ------------------------------------------------------------- */}
+              {activeTab === 'transmit' && (
+                <div className="flex flex-col lg:flex-row gap-8 relative z-10">
+                  <div className="flex-1 flex flex-col gap-6">
+                    <div className="bg-[#fffdf5] border-2 border-[#d2b48c] h-48 rounded p-4 shadow-inner relative overflow-hidden flex flex-col">
+                      <div className="text-sm text-[#a0522d] font-bold uppercase tracking-widest border-b border-[#e8dcb8] pb-1 mb-2">
+                        Outgoing Message Tape
+                      </div>
+                      <div className="flex-1 font-mono text-3xl text-[#2c1e16] break-words whitespace-pre-wrap overflow-y-auto">
+                        {decodedMessage}
+                        <span className="text-blue-600 animate-pulse">{currentSymbol}</span>
+                        <span className="animate-ping text-[#d2b48c] ml-1">_</span>
+                      </div>
+                      <button 
+                        onClick={clearMessage}
+                        className="absolute bottom-2 right-2 text-xs bg-[#e8dcb8] hover:bg-[#d2b48c] text-[#5c4033] px-3 py-1 rounded border border-[#a0522d] transition-colors"
+                      >
+                        Tear Off Paper (Clear)
+                      </button>
+                    </div>
+
+                    <div className="bg-[#5c4033] p-6 rounded-xl shadow-lg border-4 border-[#3e2723] flex flex-col items-center justify-center gap-4">
+                      <p className="text-[#f4e4bc] text-center text-sm mb-2">
+                        Press and hold the brass key below, or use your <b>SPACEBAR</b>.<br/>
+                        <span className="opacity-80">Quick tap = Dot (.), Long hold = Dash (-)</span>
+                      </p>
+                      <button
+                        onMouseDown={handlePressStart}
+                        onMouseUp={handlePressEnd}
+                        onMouseLeave={handlePressEnd}
+                        onTouchStart={(e) => { e.preventDefault(); handlePressStart(e); }}
+                        onTouchEnd={(e) => { e.preventDefault(); handlePressEnd(e); }}
+                        className={`w-40 h-24 rounded-full bg-gradient-to-b from-[#e5c158] to-[#b8860b] border-b-8 border-[#8b6508] shadow-[0_10px_20px_rgba(0,0,0,0.5)] active:border-b-0 active:translate-y-2 active:shadow-[0_2px_5px_rgba(0,0,0,0.5)] transition-all duration-75 flex items-center justify-center ${isPressing ? 'border-b-0 translate-y-2 shadow-[0_2px_5px_rgba(0,0,0,0.5)]' : ''}`}
+                      >
+                        <div className="w-24 h-12 rounded-full bg-gradient-to-b from-[#fce68d] to-[#d4af37] opacity-60"></div>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="w-full lg:w-80"><OperatorsManual /></div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* TAB 2: RECEIVE                                                */}
+              {/* ------------------------------------------------------------- */}
+              {activeTab === 'receive' && (
+                <div className="flex flex-col lg:flex-row gap-8 relative z-10">
+                  <div className="flex-1 flex flex-col items-center justify-center text-center">
+                    <div className="text-6xl mb-4">🎧</div>
+                    <h2 className="text-3xl font-bold text-[#3e2723] mb-6 font-serif">Incoming Message</h2>
+                    
+                    <div className="bg-[#fffdf5] border-2 border-[#d2b48c] rounded-lg p-8 shadow-inner w-full mb-6">
+                      <div className="flex flex-col gap-3 mb-6 items-center">
+                        <button 
+                          onClick={() => playMorseString(receiveWord, false)}
+                          disabled={isPlaying}
+                          className={`w-full max-w-sm px-6 py-3 rounded text-lg font-bold border-2 transition-all shadow-md ${isPlaying ? 'bg-[#d2b48c] text-[#8b5a2b] border-[#8b5a2b] opacity-70 cursor-not-allowed' : 'bg-[#5c4033] text-[#f4e4bc] border-[#3e2723] hover:bg-[#4a332a] hover:shadow-lg'}`}
+                        >▶ Play Telegraph Audio Only</button>
+
+                        <button 
+                          onClick={() => playMorseString(receiveWord, true)}
+                          disabled={isPlaying}
+                          className={`w-full max-w-sm px-6 py-3 rounded text-lg font-bold border-2 transition-all shadow-md ${isPlaying ? 'bg-[#e6ccab] text-[#a0522d] border-[#a0522d] opacity-70 cursor-not-allowed' : 'bg-[#a0522d] text-[#fffdf5] border-[#8b4513] hover:bg-[#8b4513] hover:shadow-lg'}`}
+                        >👁️ Play Audio & Show Code</button>
+                      </div>
+
+                      <div className="h-12 flex items-center justify-center mb-6">
+                        <span className="font-mono text-3xl text-[#5c4033] tracking-widest">{visibleCode}</span>
+                      </div>
+
+                      <div className="mb-6">
+                        <p className="text-[#8b5a2b] mb-2 font-serif italic">What word did you hear?</p>
+                        <input 
+                          type="text" 
+                          value={receiveInput}
+                          onChange={(e) => setReceiveInput(e.target.value.toUpperCase())}
+                          placeholder="TYPE HERE..."
+                          className="w-full max-w-xs text-center text-2xl p-3 border-b-4 border-[#5c4033] bg-transparent outline-none font-mono text-[#2c1e16] uppercase tracking-widest focus:border-[#a0522d]"
+                        />
+                      </div>
+
+                      <div className="flex justify-center gap-4">
+                        <button onClick={checkReceiveAnswer} className="bg-[#5c4033] text-[#f4e4bc] px-6 py-2 rounded font-bold hover:bg-[#4a332a] transition-colors">Check Translation</button>
+                        <button onClick={nextReceiveWord} className="bg-[#e8dcb8] text-[#5c4033] border border-[#a0522d] px-6 py-2 rounded font-bold hover:bg-[#d2b48c] transition-colors">Next Word</button>
+                      </div>
+                      
+                      {receiveFeedback && (
+                        <div className={`mt-6 p-3 rounded font-bold text-lg ${receiveFeedback.includes('Correct') ? 'bg-green-100 text-green-800 border border-green-300' : 'bg-red-100 text-red-800 border border-red-300'}`}>
+                          {receiveFeedback}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="w-full lg:w-80"><OperatorsManual /></div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* TAB 3: TELEGRAPH OFFICE (MULTIPLAYER)                         */}
+              {/* ------------------------------------------------------------- */}
+              {activeTab === 'chat' && (
+                <div className="flex flex-col lg:flex-row gap-8 relative z-10 h-[600px]">
+                  
+                  {/* Left Column: Chat Area */}
+                  <div className="flex-1 flex flex-col bg-[#fffdf5] border-2 border-[#d2b48c] rounded-lg shadow-inner overflow-hidden">
+                    
+                    {/* Office Header */}
+                    <div className="bg-[#e8dcb8] border-b-2 border-[#d2b48c] px-6 py-4 flex justify-between items-center">
+                      <h2 className="text-2xl font-bold text-[#3e2723] flex items-center gap-2">
+                        <span className="text-3xl">🏤</span> 
+                        {isOfficeOpen ? 'The Wire is LIVE' : 'Office Closed'}
+                      </h2>
+                      
+                      {isTeacher && (
+                        <button 
+                          onClick={toggleOfficeStatus} 
+                          className={`px-4 py-2 text-sm font-bold uppercase tracking-wide rounded border-2 transition-colors ${isOfficeOpen ? 'bg-[#a0522d] text-[#fffdf5] border-[#8b4513] hover:bg-[#8b4513]' : 'bg-green-700 text-white border-green-900 hover:bg-green-800'}`}
+                        >
+                          {isOfficeOpen ? 'Close Office' : 'Open Office'}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Authentication / Status Screens */}
+                    {!db ? (
+                      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+                        <div className="animate-spin text-4xl mb-4">⚙️</div>
+                        <h3 className="text-xl font-bold text-[#8b5a2b]">Connecting to the transcontinental network...</h3>
+                      </div>
+                    ) : (!isOfficeOpen && !isTeacher) ? (
+                      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-[#f4e4bc] bg-opacity-50">
+                        <div className="text-6xl mb-4 opacity-70">🛑</div>
+                        <h3 className="text-3xl font-bold text-[#3e2723] mb-2">The Wire is Closed</h3>
+                        <p className="text-lg text-[#8b5a2b] max-w-md">Waiting for the Station Master to open the main line for the day.</p>
+                      </div>
+                    ) : (!userInitials && !isTeacher) ? (
+                      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+                        <div className="text-5xl mb-4">🖋️</div>
+                        <h3 className="text-2xl font-bold text-[#3e2723] mb-2">Operator Registration</h3>
+                        <p className="text-[#8b5a2b] mb-6 max-w-sm">Enter your full name to receive your official 2-letter Operator Initials.</p>
+                        
+                        <div className="w-full max-w-xs">
+                          <input 
+                            type="text" 
+                            value={nameInput}
+                            onChange={(e) => setNameInput(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleJoinWire()}
+                            placeholder="e.g., Dennis Keys"
+                            className="w-full text-center text-xl p-3 border-b-4 border-[#5c4033] bg-transparent outline-none font-serif text-[#2c1e16] mb-6 focus:border-[#a0522d]"
+                          />
+                          <button 
+                            onClick={handleJoinWire}
+                            disabled={!nameInput.trim()}
+                            className="w-full bg-[#5c4033] text-[#f4e4bc] px-6 py-3 rounded font-bold hover:bg-[#4a332a] transition-colors disabled:opacity-50"
+                          >
+                            Sign the Ledger
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Active Wire UI */
+                      <div className="flex-1 flex flex-col h-full overflow-hidden">
+                        
+                        {/* Messages Log */}
+                        <div className="flex-1 overflow-y-auto p-6 wire-scroll space-y-4">
+                          {messages.length === 0 ? (
+                            <div className="text-center italic text-[#a0522d] mt-10">The wire is silent...</div>
+                          ) : (
+                            messages.map((msg) => (
+                              <div key={msg.id} className="flex gap-4 items-start group">
+                                <div className="shrink-0 bg-[#d2b48c] border border-[#a0522d] text-[#3e2723] font-bold px-2 py-1 rounded shadow-sm text-sm mt-1">
+                                  {msg.initials}
+                                </div>
+                                <div className="flex-1">
+                                  <div className="font-mono text-xl sm:text-2xl tracking-widest text-[#2c1e16] leading-relaxed break-words break-all">
+                                    {msg.morse}
+                                  </div>
+                                  {isTeacher && (
+                                    <div className="text-xs font-serif text-[#8b5a2b] opacity-0 group-hover:opacity-100 transition-opacity mt-1">
+                                      Translation: {msg.text}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                          <div ref={chatEndRef} />
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="bg-[#f4e4bc] p-4 border-t-2 border-[#d2b48c]">
+                          <div className="flex gap-4 items-end">
+                            <div className="flex-1 flex flex-col relative">
+                              <label className="text-xs font-serif text-[#a0522d] font-bold uppercase tracking-widest mb-1 ml-1">
+                                Translate & Send
+                              </label>
+                              <input 
+                                type="text" 
+                                value={chatInput} 
+                                onChange={(e) => setChatInput(e.target.value.toUpperCase())}
+                                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                                placeholder="TYPE ENGLISH MESSAGE HERE..."
+                                className="w-full text-lg p-3 border-2 border-[#8b5a2b] bg-[#fffdf5] rounded outline-none font-mono text-[#2c1e16] uppercase focus:border-[#5c4033] transition-colors shadow-inner"
+                              />
+                            </div>
+                            <button 
+                              onClick={sendMessage} 
+                              disabled={!chatInput.trim()} 
+                              className="bg-[#5c4033] text-[#f4e4bc] px-6 py-3 rounded font-bold hover:bg-[#4a332a] transition-colors border-2 border-[#3e2723] shadow disabled:opacity-50 shrink-0 h-[52px]"
+                            >
+                              Send Message
+                            </button>
+                          </div>
+                        </div>
+
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right Column: Cheat Sheet (Always visible) */}
+                  <div className="w-full lg:w-80">
+                    <OperatorsManual />
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<TelegraphApp />);
+  </script>
+</body>
+</html>
