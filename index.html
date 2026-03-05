@@ -32,7 +32,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, collection, doc, setDoc, onSnapshot, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getFirestore, collection, doc, setDoc, onSnapshot, addDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     // Your exact JoliChat configuration
     const firebaseConfig = {
@@ -53,7 +53,7 @@
     // Make Firebase functions globally available for React to use
     window.FB = {
       auth, db, signInAnonymously, onAuthStateChanged,
-      collection, doc, setDoc, onSnapshot, addDoc
+      collection, doc, setDoc, onSnapshot, addDoc, deleteDoc, getDocs
     };
 
     // Tell React that Firebase is loaded and ready
@@ -267,6 +267,23 @@
         });
         
         setChatInput('');
+      };
+
+      const clearAllMessages = async () => {
+        if (!isTeacher || !db || !window.FB) return;
+        if (!window.confirm("Are you sure you want to cut the wire? This will delete all messages for everyone.")) return;
+
+        const { collection, getDocs, deleteDoc, doc } = window.FB;
+        const messagesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'telegraph_messages');
+        
+        try {
+          const snapshot = await getDocs(messagesColRef);
+          // Delete every message document one by one
+          const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'telegraph_messages', d.id)));
+          await Promise.all(deletePromises);
+        } catch (err) {
+          console.error("Error clearing messages:", err);
+        }
       };
 
       // =======================================================================
@@ -519,9 +536,14 @@
                         <span className="text-3xl">🏤</span> {isOfficeOpen ? 'The Wire is LIVE' : 'Office Closed'}
                       </h2>
                       {isTeacher && (
-                        <button onClick={toggleOfficeStatus} className={`px-4 py-2 text-sm font-bold uppercase tracking-wide rounded border-2 transition-colors ${isOfficeOpen ? 'bg-[#a0522d] text-[#fffdf5] border-[#8b4513] hover:bg-[#8b4513]' : 'bg-green-700 text-white border-green-900 hover:bg-green-800'}`}>
-                          {isOfficeOpen ? 'Close Office' : 'Open Office'}
-                        </button>
+                        <div className="flex gap-2">
+                          <button onClick={clearAllMessages} className="px-4 py-2 text-sm font-bold uppercase tracking-wide rounded border-2 transition-colors bg-red-800 text-[#fffdf5] border-red-900 hover:bg-red-900">
+                            Clear Wire
+                          </button>
+                          <button onClick={toggleOfficeStatus} className={`px-4 py-2 text-sm font-bold uppercase tracking-wide rounded border-2 transition-colors ${isOfficeOpen ? 'bg-[#a0522d] text-[#fffdf5] border-[#8b4513] hover:bg-[#8b4513]' : 'bg-green-700 text-white border-green-900 hover:bg-green-800'}`}>
+                            {isOfficeOpen ? 'Close Office' : 'Open Office'}
+                          </button>
+                        </div>
                       )}
                     </div>
 
