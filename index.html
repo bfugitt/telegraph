@@ -141,6 +141,11 @@
       const wordTimer = useRef(null);
       const chatEndRef = useRef(null);
 
+      // Background Audio Queue Refs
+      const sessionStartTime = useRef(Date.now()); // Tracks exactly when they joined
+      const audioQueue = useRef([]);
+      const isPlayingQueue = useRef(false);
+
       // Transmit State
       const [isPressing, setIsPressing] = useState(false);
       const [currentSymbol, setCurrentSymbol] = useState('');
@@ -186,6 +191,39 @@
         return () => { if (unsubscribeAuth) unsubscribeAuth(); };
       }, []);
 
+      // =======================================================================
+      // BACKGROUND AUDIO QUEUE LOGIC
+      // =======================================================================
+      const playRawMorse = async (morseString) => {
+        const dotLength = 120;
+        for (let i = 0; i < morseString.length; i++) {
+          const char = morseString[i];
+          if (char === '.') {
+            audioPlayer.start(); await delay(dotLength); audioPlayer.stop(); await delay(dotLength);
+          } else if (char === '-') {
+            audioPlayer.start(); await delay(dotLength * 3); audioPlayer.stop(); await delay(dotLength);
+          } else if (char === ' ') {
+            await delay(dotLength * 2);
+          } else if (char === '/') {
+            await delay(dotLength * 2);
+          }
+        }
+      };
+
+      const processQueue = async () => {
+        if (isPlayingQueue.current) return;
+        isPlayingQueue.current = true;
+        
+        while (audioQueue.current.length > 0) {
+          const morseMsg = audioQueue.current.shift();
+          await delay(500); // Small pause before a new message starts
+          await playRawMorse(morseMsg);
+          await delay(1000); // Pause between back-to-back messages
+        }
+        
+        isPlayingQueue.current = false;
+      };
+
       // Listen to Office Status & Messages
       useEffect(() => {
         // We removed the strict !user check here so it loads regardless
@@ -212,6 +250,21 @@
           snapshot.forEach(d => msgs.push({ id: d.id, ...d.data() }));
           msgs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
           setMessages(msgs);
+
+          // Handle audio for new incoming messages using exact timestamps
+          snapshot.docChanges().forEach(change => {
+            if (change.type === 'added') {
+              const data = change.doc.data();
+              // Only play audio if the message was sent AFTER this user loaded the page
+              if (data.timestamp && data.timestamp > sessionStartTime.current) {
+                audioQueue.current.push(data.morse);
+              }
+            }
+          });
+          
+          if (audioQueue.current.length > 0) {
+            processQueue(); // Kick off the queue
+          }
         }, (err) => console.error("Message Listener Error:", err));
 
         return () => {
