@@ -286,6 +286,18 @@
         }
       };
 
+      const deleteMessage = async (msgId) => {
+        if (!isTeacher || !db || !window.FB) return;
+        if (!window.confirm("Delete this specific message?")) return;
+        
+        const { deleteDoc, doc } = window.FB;
+        try {
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'telegraph_messages', msgId));
+        } catch (err) {
+          console.error("Error deleting message:", err);
+        }
+      };
+
       // =======================================================================
       // TELEGRAPH KEY LOGIC
       // =======================================================================
@@ -575,12 +587,17 @@
                             <div className="text-center italic text-[#a0522d] mt-10">The wire is silent...</div>
                           ) : (
                             messages.map((msg) => (
-                              <div key={msg.id} className="flex gap-4 items-start group">
+                              <div key={msg.id} className="flex gap-4 items-start group relative">
                                 <div className="shrink-0 bg-[#d2b48c] border border-[#a0522d] text-[#3e2723] font-bold px-2 py-1 rounded shadow-sm text-sm mt-1">{msg.initials}</div>
                                 <div className="flex-1">
                                   <div className="font-mono text-xl sm:text-2xl tracking-widest text-[#2c1e16] leading-relaxed break-words break-all">{msg.morse}</div>
                                   {isTeacher && <div className="text-xs font-serif text-[#8b5a2b] opacity-0 group-hover:opacity-100 transition-opacity mt-1">Translation: {msg.text}</div>}
                                 </div>
+                                {isTeacher && (
+                                  <button onClick={() => deleteMessage(msg.id)} className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 bg-red-100 hover:bg-red-200 text-red-800 border border-red-300 rounded px-2 py-1 text-xs font-bold shadow-sm" title="Remove Message">
+                                    Remove
+                                  </button>
+                                )}
                               </div>
                             ))
                           )}
